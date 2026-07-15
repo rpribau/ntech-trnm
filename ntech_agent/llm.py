@@ -1,7 +1,13 @@
-"""Cliente LLM: apunta a Cloud Run (vLLM) o a Ollama según ``NTECH_LLM_BACKEND``.
+"""Cliente LLM: tres backends intercambiables vía ``NTECH_LLM_BACKEND``.
 
-Ambos backends exponen la API compatible con OpenAI, así que el resto del código
-usa siempre ``langchain_openai.ChatOpenAI`` sin saber cuál está detrás.
+- ``cloudrun``  — vLLM propio en GCP Cloud Run (self-hosted, requiere GPU L4).
+- ``ollama``    — modelo local vía Ollama (barato/offline, tu hardware).
+- ``anthropic`` — API de Anthropic (Claude), pay-per-token, sin infra que mantener.
+
+``cloudrun`` y ``ollama`` exponen la API compatible con OpenAI (``ChatOpenAI``);
+``anthropic`` usa su propio cliente (``ChatAnthropic``) pero implementa la misma
+interfaz de LangChain (``invoke``, ``with_structured_output``, ...), así que el
+resto del código (grafo, retrieval, rerank) no necesita saber cuál está activo.
 
 Para Cloud Run (servicio privado con IAM) se mintea un **ID token** y se envía
 como ``Authorization: Bearer <token>`` (el cliente de OpenAI usa ``api_key`` como
@@ -14,6 +20,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
 from config.settings import Settings, get_settings
@@ -92,13 +99,28 @@ def get_chat_model(
     max_tokens: int | None = 2048,
     streaming: bool = False,
     settings: Settings | None = None,
-) -> ChatOpenAI:
-    """Devuelve un ``ChatOpenAI`` configurado para el backend activo.
+) -> BaseChatModel:
+    """Devuelve el chat model de LangChain configurado para el backend activo.
 
     Nota: se construye por-llamada para que el ID token de Cloud Run siempre sea
     fresco en sesiones largas.
     """
     settings = settings or get_settings()
+
+    if settings.llm_backend == "anthropic":
+        if not settings.anthropic_api_key:
+            raise RuntimeError("NTECH_ANTHROPIC_API_KEY no está configurado en .env")
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(
+            model=settings.anthropic_model,
+            api_key=settings.anthropic_api_key,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            streaming=streaming,
+            timeout=600,
+            max_retries=2,
+        )
 
     if settings.llm_backend == "cloudrun":
         if not settings.cloudrun_url:

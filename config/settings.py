@@ -28,7 +28,10 @@ class Settings(BaseSettings):
     )
 
     # ---- Backend del LLM ----
-    llm_backend: Literal["cloudrun", "ollama"] = "cloudrun"
+    # cloudrun  = vLLM propio en GCP Cloud Run (self-hosted, GPU L4)
+    # ollama    = modelo local vía Ollama (tu hardware, barato/offline)
+    # anthropic = API de Anthropic (Claude), pay-per-token, sin infra propia
+    llm_backend: Literal["cloudrun", "ollama", "anthropic"] = "cloudrun"
 
     # ---- Cloud Run (vLLM) ----
     cloudrun_url: str = ""
@@ -38,9 +41,13 @@ class Settings(BaseSettings):
         default="", validation_alias="GOOGLE_APPLICATION_CREDENTIALS"
     )
 
-    # ---- Ollama (fallback local) ----
+    # ---- Ollama (modelo local) ----
     ollama_url: str = "http://localhost:11434/v1"
     ollama_model: str = "qwen2.5-coder:7b"
+
+    # ---- Anthropic (Claude API) ----
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-opus-4-8"
 
     # ---- Embeddings ----
     embedding_model: str = "BAAI/bge-m3"
@@ -97,7 +104,11 @@ class Settings(BaseSettings):
 
     @property
     def active_model(self) -> str:
-        return self.cloudrun_model if self.llm_backend == "cloudrun" else self.ollama_model
+        if self.llm_backend == "cloudrun":
+            return self.cloudrun_model
+        if self.llm_backend == "anthropic":
+            return self.anthropic_model
+        return self.ollama_model
 
 
 @lru_cache

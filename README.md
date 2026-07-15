@@ -8,9 +8,12 @@ con áreas de oportunidad y estado contextualizado de cada repo.
 Basado en la arquitectura de [RAG_Queries_Agent](https://github.com/Jorge-Polanco-Roque/RAG_Queries_Agent)
 (LangGraph supervisor + RAG híbrido + clientes compatibles OpenAI).
 
-## Arquitectura (split cloud / local)
+## Arquitectura (split cloud / local + backend de LLM intercambiable)
 
-Solo la inferencia pesada del LLM vive en GCP; el resto corre local y barato.
+Todo el driver (LangGraph, RAG, GitHub, UI) corre siempre local. El **backend
+del LLM** es intercambiable con una sola variable de entorno
+(`NTECH_LLM_BACKEND`) — el resto del código no sabe ni le importa cuál está
+activo:
 
 ```
 ┌─────────────────────────── Local (tu Windows) ───────────────────────────┐
@@ -21,13 +24,21 @@ Solo la inferencia pesada del LLM vive en GCP; el resto corre local y barato.
 │                       └─ synthesizer ─►  reporte con citas                │
 │  Embeddings locales (bge-m3)   GitHub sync (clonar/pull) + GitHub MCP     │
 └───────────────────────────────┬──────────────────────────────────────────┘
-                                 │ HTTPS + ID token (IAM)
-                                 ▼
-┌─────────────────────── GCP Cloud Run (GPU L4, scale-to-zero) ─────────────┐
-│  vLLM  ──►  Qwen3-Coder-30B-A3B  (API compatible OpenAI)                  │
-│  Pesos en bucket GCS (Cloud Storage FUSE).  Paga solo mientras infiere.   │
-└───────────────────────────────────────────────────────────────────────────┘
+                                 │  NTECH_LLM_BACKEND = cloudrun | ollama | anthropic
+              ┌──────────────────────────────┼──────────────────────────────┐
+              ▼                              ▼                              ▼
+┌─────────────────────────┐   ┌───────────────────────┐   ┌───────────────────────────┐
+│ GCP Cloud Run (GPU L4)  │   │ Ollama (local)        │   │ API de Anthropic (Claude) │
+│ vLLM + Qwen3-Coder-30B  │   │ modelo pequeño en tu   │   │ pay-per-token, sin infra  │
+│ self-hosted, scale-to-0 │   │ hardware, offline      │   │ que mantener              │
+└─────────────────────────┘   └───────────────────────┘   └───────────────────────────┘
 ```
+
+| Backend | Cuándo usarlo | Costo |
+|---|---|---|
+| `cloudrun` | Modelo open-weight self-hosted (el ángulo de tesis: LLM propio, no comercial) | GPU L4 ~$0.67/hr solo mientras infiere; scale-to-zero en reposo |
+| `ollama` | Desarrollo/demo local, sin gastar nada, sin depender de la nube | Gratis (tu hardware) |
+| `anthropic` | Máxima calidad/confiabilidad sin mantener infraestructura | Pay-per-token vía [console.anthropic.com](https://console.anthropic.com) (cuenta separada de Claude Pro/Max) |
 
 ## Requisitos
 
@@ -78,15 +89,37 @@ python -m scripts.run_review --org           # reporte de toda la organización
 Ejemplo de Q&A en la UI: *"Dame un resumen de ws-arg"* → resumen contextual del
 repo con citas a los archivos relevantes.
 
-## Desarrollo barato / offline (sin GCP)
+## Cambiar de backend de LLM
 
-Pon `NTECH_LLM_BACKEND=ollama` en `.env` y corre un modelo chico:
+Solo edita `NTECH_LLM_BACKEND` en `.env` — el resto del código no cambia.
 
+**Ollama (local, gratis, offline):**
 ```powershell
 ollama pull qwen2.5-coder:7b
 ```
+```
+NTECH_LLM_BACKEND=ollama
+```
 
-El código no cambia (ambos backends son compatibles con la API de OpenAI).
+**Anthropic (API de Claude, pay-per-token):**
+1. Crea una cuenta en [console.anthropic.com](https://console.anthropic.com) (es
+   **independiente** de una suscripción Claude Pro/Max — no la incluye) y agrega
+   crédito (mínimo $5).
+2. Genera una API key y ponla en `.env`:
+```
+NTECH_LLM_BACKEND=anthropic
+NTECH_ANTHROPIC_API_KEY=sk-ant-...
+```
+
+**Cloud Run (self-hosted, ver sección "Puesta en marcha" arriba):**
+```
+NTECH_LLM_BACKEND=cloudrun
+```
+
+Prueba rápida del backend activo:
+```powershell
+python -m ntech_agent.llm
+```
 
 ## Costo (tesis)
 
