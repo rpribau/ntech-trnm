@@ -1,0 +1,34 @@
+# Secrets / entorno
+.env
+*.key
+*-sa.json
+service-account*.json
+
+# Datos generados (repos clonados, índice vectorial, reportes)
+data/repos/
+data/index/
+data/reports/
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Modelos / caches de HF
+.cache/
+models/
+
+# SO / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

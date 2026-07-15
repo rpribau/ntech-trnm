@@ -1,0 +1,84 @@
+# Rúbrica de revisión de código. Pesos relativos (suman 100) y criterios por nivel.
+# El nodo revisor la usa para estructurar la evaluación y calcular un score global.
+
+version: 0.1.0
+levels: [bien, aceptable, a_mejorar, critico]
+level_scores:
+  bien: 1.0
+  aceptable: 0.7
+  a_mejorar: 0.4
+  critico: 0.0
+
+dimensions:
+  - id: correctitud
+    nombre: Correctitud y manejo de errores
+    peso: 20
+    guia: guidelines/software_dev/clean_code.md
+    criterios: >
+      Bien: casos borde y errores contemplados, sin excepciones tragadas.
+      Crítico: bugs claros o errores silenciados que ocultan fallos.
+
+  - id: diseno
+    nombre: Diseño y arquitectura (SOLID)
+    peso: 15
+    guia: guidelines/software_dev/solid.md
+    criterios: >
+      Bien: responsabilidades claras, bajo acoplamiento, capas respetadas.
+      Crítico: God objects, dependencias rígidas, sin separación de capas.
+
+  - id: design_patterns
+    nombre: Design patterns
+    peso: 10
+    guia: guidelines/software_dev/design_patterns.md
+    criterios: >
+      Bien: patrones correctos y necesarios donde aportan.
+      A mejorar: oportunidades claras desaprovechadas u over-engineering.
+
+  - id: legibilidad
+    nombre: Legibilidad y estilo
+    peso: 10
+    guia: guidelines/software_dev/python_style.md
+    criterios: >
+      Bien: nombres claros, funciones pequeñas, sin números mágicos.
+      A mejorar: nombres crípticos, funciones largas, estilo inconsistente.
+
+  - id: smells
+    nombre: Anti-patterns y code smells
+    peso: 10
+    guia: guidelines/software_dev/anti_patterns_code_smells.md
+    criterios: >
+      Bien: DRY/KISS/YAGNI respetados, sin duplicación evidente.
+      Crítico: duplicación extensa, spaghetti, hardcoding.
+
+  - id: testing
+    nombre: Testing
+    peso: 10
+    guia: guidelines/software_dev/testing.md
+    criterios: >
+      Bien: tests para lógica no trivial, deterministas, cubren errores.
+      Crítico: sin tests de lógica crítica.
+
+  - id: seguridad
+    nombre: Seguridad
+    peso: 10
+    guia: guidelines/software_dev/git_and_security.md
+    criterios: >
+      Bien: sin secretos hardcodeados, entradas validadas, deps sanas.
+      Crítico: secretos en el código, inyección, deps vulnerables.
+
+  - id: reproducibilidad
+    nombre: Reproducibilidad / Ciencia de Datos
+    peso: 10
+    guia: guidelines/data_science/reproducibility.md
+    aplica_si: "el repo tiene contenido de datos/ML/notebooks"
+    criterios: >
+      Bien: estructura clara, deps fijadas, sin data leakage, notebooks limpios.
+      Crítico: data leakage, rutas locales, notebooks no reproducibles.
+
+  - id: documentacion
+    nombre: Documentación
+    peso: 5
+    guia: guidelines/software_dev/code_review_checklist.md
+    criterios: >
+      Bien: README y docstrings suficientes, config externalizada.
+      A mejorar: falta de README o instrucciones para correr el proyecto.

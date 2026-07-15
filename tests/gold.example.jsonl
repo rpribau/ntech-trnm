@@ -1,0 +1,3 @@
+{"question": "¿Cómo se configura la conexión a la base de datos?", "repo": "ws-arg", "expected_paths": ["config", "settings", "db"]}
+{"question": "¿Dónde está el entrenamiento del modelo?", "repo": "ws-arg", "expected_paths": ["train", "model"]}
+{"question": "¿Qué endpoints expone la API?", "expected_paths": ["api", "routes", "main"]}

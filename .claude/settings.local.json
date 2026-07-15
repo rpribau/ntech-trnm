@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(python -)",
+      "Bash(python -m compileall -q ntech_agent scripts)",
+      "Bash(python -m venv C:/Users/rprie/AppData/Local/Temp/claude/C--Users-rprie-OneDrive-Documents-Tesis-ntech-trnm/ec218699-1c44-4eef-a871-59f128d6ffe0/scratchpad/venv)",
+      "Bash(C:/Users/rprie/AppData/Local/Temp/claude/C--Users-rprie-OneDrive-Documents-Tesis-ntech-trnm/ec218699-1c44-4eef-a871-59f128d6ffe0/scratchpad/venv/Scripts/python.exe -m pip install -q --disable-pip-version-check pydantic-settings langchain-core langchain-text-splitters pytest)",
+      "Bash(PYTHONPATH=C:/Users/rprie/OneDrive/Documents/Tesis/ntech-trnm C:/Users/rprie/AppData/Local/Temp/claude/C--Users-rprie-OneDrive-Documents-Tesis-ntech-trnm/ec218699-1c44-4eef-a871-59f128d6ffe0/scratchpad/venv/Scripts/python.exe -m pytest tests/test_settings.py tests/test_chunking.py -q)",
+      "WebSearch"
+    ]
+  }
+}

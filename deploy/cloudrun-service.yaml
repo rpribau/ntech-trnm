@@ -1,0 +1,55 @@
+# Alternativa declarativa a deploy.sh (aplicar con:
+#   gcloud run services replace deploy/cloudrun-service.yaml --region us-central1 )
+# Reemplaza PROJECT_ID, REGION y BUCKET antes de aplicar.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ntech-vllm
+  labels:
+    cloud.googleapis.com/location: us-central1
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"      # scale-to-zero
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/cpu-throttling: "false"  # GPU requiere CPU siempre asignada
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      containerConcurrency: 8
+      timeoutSeconds: 3600
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT_ID/ntech/vllm:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MODEL_ID
+              value: "stelterlab/Qwen3-Coder-30B-A3B-Instruct-AWQ"
+            - name: SERVED_MODEL_NAME
+              value: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+          resources:
+            limits:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: hf
+              mountPath: /root/.cache/huggingface
+          # Arranque lento (carga del modelo): damos margen amplio.
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 40   # ~10 min de margen para el primer arranque
+      nodeSelector:
+        run.googleapis.com/accelerator: nvidia-l4
+      volumes:
+        - name: hf
+          csi:
+            driver: gcsfuse.run.googleapis.com
+            volumeAttributes:
+              bucketName: PROJECT_ID-ntech-hf-cache
