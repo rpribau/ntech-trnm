@@ -19,10 +19,13 @@ activo:
 ┌─────────────────────────── Local (tu Windows) ───────────────────────────┐
 │  Streamlit UI  ──►  LangGraph supervisor                                  │
 │                       ├─ retriever  ──►  Chroma (RAG híbrido + rerank)    │
+│                       ├─ repo map   ──►  archivos completos por PageRank  │
+│                       │                   (tree-sitter, offline)          │
 │                       ├─ reviewer   ──►  Skill + guidelines + análisis    │
 │                       │                   estático (ruff/radon)           │
-│                       └─ synthesizer ─►  reporte con citas                │
+│                       └─ synthesizer ─►  respuesta compacta con citas     │
 │  Embeddings locales (bge-m3)   GitHub sync (clonar/pull) + GitHub MCP     │
+│  Reportes ejecutivos (5 secciones, sin jerga) ──► data/reports/*.md       │
 └───────────────────────────────┬──────────────────────────────────────────┘
                                  │  NTECH_LLM_BACKEND = cloudrun | ollama | anthropic
               ┌──────────────────────────────┼──────────────────────────────┐
@@ -72,7 +75,7 @@ Ver [deploy/README.md](deploy/README.md) para el detalle y la seguridad (IAM).
 
 ```powershell
 python -m scripts.sync_repos      # clona/actualiza todos los repos de la org
-python -m scripts.build_index     # indexa código + guidelines en Chroma
+python -m scripts.build_index     # indexa código + guidelines en Chroma, y calcula el repo map
 ```
 
 ### 3. Usar el agente
@@ -132,7 +135,8 @@ Para corridas batch largas, considera `min-instances=1` temporal y apágalo al t
 ```
 ntech-trnm/
 ├── config/settings.py       # configuración tipada (Pydantic Settings)
-├── ntech_agent/             # driver: LLM, RAG, GitHub, grafo, reporte
+├── ntech_agent/             # driver: LLM, RAG, repo map, GitHub, grafo, reporte
+│   └── repomap/             # grafo de dependencias (tree-sitter) + PageRank, offline
 ├── guidelines/              # guidelines de Software Dev y Ciencia de Datos (RAG + MCP)
 ├── skills/code_best_practices/  # la "Skill" de revisión (rúbrica + design patterns)
 ├── deploy/                  # imagen vLLM + Cloud Run (GPU L4)

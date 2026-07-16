@@ -51,17 +51,54 @@ def retrieve(
     return retriever.invoke(query)[:fetch_k]
 
 
+def _dedupe_by_id(docs: list[Document]) -> list[Document]:
+    seen: set[str] = set()
+    out: list[Document] = []
+    for d in docs:
+        doc_id = d.metadata.get("id")
+        if doc_id in seen:
+            continue
+        seen.add(doc_id)
+        out.append(d)
+    return out
+
+
 def search(
     query: str,
     *,
-    repo: str | None = None,
+    repo: str | list[str] | None = None,
     k: int | None = None,
     settings: Settings | None = None,
 ) -> list[Document]:
-    """Pipeline completo: retrieve híbrido -> rerank -> top-k."""
+    """Pipeline completo: retrieve híbrido -> rerank -> top-k.
+
+    ``repo`` acepta un solo nombre, una lista (comparar 2+ repos) o None (sin
+    filtro). Con 2+ repos, tanto el retrieval COMO el rerank corren POR REPO (no
+    un pool combinado con un solo rerank global): un rerank global vuelve a poder
+    dejar un repo entero por debajo del umbral de relevancia (o fuera de
+    ``_MAX_CANDIDATES`` según el orden de concatenación) aunque el retrieval por
+    repo ya haya garantizado candidatos reales para cada uno — es la misma clase
+    de bug (ranking global sin piso por repo), solo que un paso más adelante.
+    Rerankear por repo y tomar un piso mínimo de CADA UNO antes de unir es lo que
+    garantiza representación real en el resultado final.
+    """
     settings = settings or get_settings()
     k = k or settings.retrieval_k
-    candidates = retrieve(query, repo=repo, settings=settings)
+    repos = repo if isinstance(repo, list) else ([repo] if repo else [])
+
+    if len(repos) > 1:
+        per_repo_fetch_k = max(
+            settings.retrieval_multi_repo_min_fetch_k,
+            settings.retrieval_fetch_k // len(repos),
+        )
+        per_repo_k = max(settings.retrieval_multi_repo_min_k, k // len(repos))
+        docs_out: list[Document] = []
+        for r in repos:
+            repo_candidates = retrieve(query, repo=r, fetch_k=per_repo_fetch_k, settings=settings)
+            docs_out.extend(rerank(query, repo_candidates, k=per_repo_k, settings=settings))
+        return _dedupe_by_id(docs_out)
+
+    candidates = retrieve(query, repo=repos[0] if repos else None, settings=settings)
     return rerank(query, candidates, k=k, settings=settings)
 
 

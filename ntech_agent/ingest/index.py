@@ -15,6 +15,7 @@ from langchain_core.documents import Document
 from config.settings import Settings, get_settings
 from ntech_agent.embeddings import get_embeddings
 from ntech_agent.ingest.chunking import iter_all_documents
+from ntech_agent.repomap.build import build_repo_map
 
 _BATCH = 128
 
@@ -84,9 +85,18 @@ def build_index(*, reset: bool = True, settings: Settings | None = None) -> dict
 
     repos = {d.metadata["repo"] for d in docs if d.metadata["repo"] != "__guidelines__"}
     n_guidelines = sum(1 for d in docs if d.metadata["source_type"] == "guideline")
+
+    # Repo map (tree-sitter + PageRank): calculado offline aquí, una sola vez por
+    # repo, no por-consulta — ver ntech_agent/repomap/build.py.
+    repomap_stats = []
+    if settings.repomap_enabled:
+        for repo in sorted(repos):
+            repomap_stats.append(build_repo_map(repo, settings))
+
     return {
         "indexed": len(docs),
         "repos": len(repos),
         "guidelines": n_guidelines,
         "collection": settings.chroma_collection,
+        "repomap": repomap_stats,
     }

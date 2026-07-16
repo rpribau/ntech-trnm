@@ -16,6 +16,7 @@ bearer). El token se cachea con TTL para evitar mintarlo en cada llamada.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
 from dataclasses import dataclass
@@ -24,6 +25,19 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
 from config.settings import Settings, get_settings
+
+_logger = logging.getLogger("ntech_agent.llm")
+
+
+def log_llm_failure(where: str, exc: Exception) -> None:
+    """Registra la excepción real detrás de una degradación silenciosa a un
+    mensaje amigable — sin esto, un fallo del backend (rate limit, timeout,
+    5xx, error de auth) queda invisible: el usuario solo ve el texto genérico
+    y no hay forma de diagnosticar qué pasó. No cambia el comportamiento de
+    fallback en el caller, solo lo hace observable (aparece en la consola
+    donde corre `streamlit run` o el script)."""
+    _logger.warning("Fallo de LLM en %s: %s: %s", where, type(exc).__name__, exc)
+
 
 # ---- Caché simple de ID token (audience -> (token, expiry_epoch)) ----
 _TOKEN_TTL_SECONDS = 45 * 60  # refrescamos antes de la expiración real (~60 min)

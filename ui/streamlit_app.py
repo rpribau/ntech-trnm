@@ -17,6 +17,7 @@ import streamlit as st  # noqa: E402
 from config.settings import get_settings  # noqa: E402
 from ntech_agent.graph.builder import run_agent  # noqa: E402
 from ntech_agent.graph.supervisor import list_local_repos  # noqa: E402
+from ui import insights_tab  # noqa: E402
 
 st.set_page_config(page_title="NTech Code Review Agent", page_icon="🔍", layout="wide")
 settings = get_settings()
@@ -61,23 +62,40 @@ with st.sidebar:
         st.session_state.history = []
         st.rerun()
 
-# ----------------------------- Chat ---------------------------------------- #
 st.title("🔍 NTech Code Review Agent")
-st.caption("Pregunta por un repo (p. ej. *“Dame un resumen de ws-arg”*) o pide una revisión.")
 
-for msg in st.session_state.history:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+# st.chat_input solo se fija al fondo del viewport cuando se llama a nivel raíz
+# del script — anidarlo dentro de un contenedor como st.tabs() rompe ese
+# posicionamiento (queda flotando arriba de todo, muy incómodo). Por eso acá se
+# usa un radio (widget normal, no contenedor) en vez de tabs, y el chat_input
+# se llama sin ningún `with` alrededor.
+view = st.radio(
+    "Sección", ["💬 Chat", "📊 Insights"], horizontal=True, label_visibility="collapsed"
+)
 
-if prompt := st.chat_input("Escribe tu consulta…"):
-    st.session_state.history.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+# ----------------------------- Insights ------------------------------------ #
+if view == "📊 Insights":
+    insights_tab.render(settings, repos)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Recuperando contexto y razonando…"):
-            final = run_agent(prompt, thread_id=st.session_state.thread_id)
-        answer = final.get("answer", "_(sin respuesta)_")
-        st.caption(f"ruta: `{final.get('route')}`  ·  repo: `{final.get('repo')}`")
-        st.markdown(answer)
-    st.session_state.history.append({"role": "assistant", "content": answer})
+# ----------------------------- Chat ---------------------------------------- #
+else:
+    st.caption("Pregunta por un repo (p. ej. *“Dame un resumen de ws-arg”*) o pide una revisión.")
+
+    for msg in st.session_state.history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Escribe tu consulta…"):
+        st.session_state.history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Recuperando contexto y razonando…"):
+                final = run_agent(prompt, thread_id=st.session_state.thread_id)
+            answer = final.get("answer", "_(sin respuesta)_")
+            repos_detected = final.get("repos") or ([final["repo"]] if final.get("repo") else [])
+            repos_txt = ", ".join(f"`{r}`" for r in repos_detected) or "`(ninguno)`"
+            st.caption(f"ruta: `{final.get('route')}`  ·  repos: {repos_txt}")
+            st.markdown(answer)
+        st.session_state.history.append({"role": "assistant", "content": answer})

@@ -7,11 +7,13 @@ y ``NTECH_RERANK_THRESHOLD``. Si falla o se desactiva, devuelve el top-k origina
 
 from __future__ import annotations
 
+import json
+
 from langchain_core.documents import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from config.settings import Settings, get_settings
-from ntech_agent.llm import get_chat_model
+from ntech_agent.llm import get_chat_model, log_llm_failure
 
 _MAX_CANDIDATES = 20  # cota para no saturar al modelo local
 _SNIPPET_CHARS = 500
@@ -43,6 +45,25 @@ def _prompt(query: str, docs: list[Document]) -> str:
     return "\n".join(lines)
 
 
+def _repair_stringified_scores(exc: ValidationError) -> _RerankResult | None:
+    """Repara un fallo conocido de tool-calling con schemas anidados: a veces el
+    modelo devuelve ``scores`` como un STRING con JSON adentro (a veces incluso
+    el objeto ``{"scores": [...]}`` entero envuelto en ese string) en vez de la
+    lista real. Se intenta parsear ese string antes de resignarse al fallback
+    sin rerank — recupera la llamada (que sí generó datos válidos, solo mal
+    empaquetados) en vez de tirarla a la basura. Devuelve ``None`` si el error
+    no es este caso puntual o si el string tampoco es JSON parseable."""
+    for err in exc.errors():
+        if err.get("loc") == ("scores",) and isinstance(err.get("input"), str):
+            try:
+                parsed = json.loads(err["input"])
+                scores = parsed["scores"] if isinstance(parsed, dict) else parsed
+                return _RerankResult(scores=scores)
+            except Exception:
+                return None
+    return None
+
+
 def rerank(
     query: str,
     docs: list[Document],
@@ -62,7 +83,14 @@ def rerank(
         llm = get_chat_model(temperature=0.0, max_tokens=1024, settings=settings)
         structured = llm.with_structured_output(_RerankResult)
         result: _RerankResult = structured.invoke(_prompt(query, candidates))
-    except Exception:
+    except ValidationError as exc:
+        repaired = _repair_stringified_scores(exc)
+        if repaired is None:
+            log_llm_failure("rerank.py::rerank", exc)
+            return docs[:k]
+        result = repaired
+    except Exception as exc:
+        log_llm_failure("rerank.py::rerank", exc)
         # Fallback: preserva el orden del retrieval híbrido.
         return docs[:k]
 

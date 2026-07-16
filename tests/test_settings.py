@@ -10,7 +10,11 @@ def test_paths_are_absolute():
 
 def test_active_model_switches_with_backend():
     s = get_settings()
-    expected = s.cloudrun_model if s.llm_backend == "cloudrun" else s.ollama_model
+    expected = {
+        "cloudrun": s.cloudrun_model,
+        "anthropic": s.anthropic_model,
+        "ollama": s.ollama_model,
+    }[s.llm_backend]
     assert s.active_model == expected
 
 

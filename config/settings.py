@@ -71,11 +71,25 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
     retrieval_k: int = 8
     retrieval_fetch_k: int = 24
+    # Piso de fetch_k por repo al comparar 2+ repos en una consulta (retrieval
+    # balanceado: garantiza representación mínima de cada repo antes del rerank).
+    retrieval_multi_repo_min_fetch_k: int = 4
+    # Piso de docs finales por repo tras el rerank (también por-repo, no global —
+    # un rerank global puede volver a dejar un repo entero por debajo del umbral).
+    retrieval_multi_repo_min_k: int = 2
     rerank_enabled: bool = True
     rerank_threshold: float = 0.3
 
     # ---- Análisis estático ----
     static_analysis_enabled: bool = True
+
+    # ---- Repo map (tree-sitter + PageRank) ----
+    repomap_enabled: bool = True
+    repomap_top_files: int = 5  # archivos completos incluidos en el contexto del reviewer
+    repomap_file_chars: int = 4000  # truncado por archivo (conservador: contexto chico en Ollama)
+    repomap_seed_boost: float = 10.0  # boost de personalización para archivos ya traídos por RAG
+    repomap_pagerank_alpha: float = 0.85
+    repomap_min_files_for_rank: int = 2  # bajo este umbral, repomap_node se autosaltea
 
     # ---- Prompts / generación (nodos del grafo) ----
     ctx_chars: int = 900  # truncado por doc al armar el contexto de un prompt
@@ -84,9 +98,36 @@ class Settings(BaseSettings):
     router_temperature: float = 0.0
     router_max_tokens: int = 256
     reviewer_temperature: float = 0.1
-    reviewer_max_tokens: int = 2048
+    reviewer_max_tokens: int = 8192  # el repo map manda archivos completos: 4096 se quedaba corto
     synthesize_temperature: float = 0.2
-    synthesize_max_tokens: int = 1536
+    synthesize_max_tokens: int = 1024
+
+    # ---- Reportes ejecutivos ----
+    report_narrativa_max_tokens: int = 2048  # síntesis hallazgos+recomendaciones (por repo)
+    report_org_synthesis_max_tokens: int = 3072  # síntesis cross-repo (reporte de organización)
+
+    # ---- Compactación de mensajes de chat ----
+    citations_max: int = 12  # máx. líneas en "## Fuentes"
+    review_inline_findings_max: int = 6  # máx. hallazgos mostrados inline en el chat
+
+    # ---- Commits / Insights (dashboards ejecutivos + Q&A de actividad) ----
+    commits_enabled: bool = True
+    commits_lookback_days: int = 180  # ventana de backfill en el primer sync de un repo
+    commits_summarize_enabled: bool = True  # si es False, solo se guarda metadata (Fase 1)
+    commits_max_files_per_commit: int = 30  # commits más grandes se guardan sin resumir
+    # 1024 se quedaba corto en producción: un solo LLM call debe devolver JSON
+    # estructurado con un resumen por archivo, y commits de varias decenas de
+    # archivos truncaban a mitad del structured output (caía al fallback de
+    # texto libre, que además pierde el detalle por archivo). Mismo tipo de
+    # ajuste que reviewer_max_tokens (ver config/settings.py más arriba).
+    commits_summary_max_tokens: int = 4096
+    # Commits (no filas) incluidos en repo_insights()["recent"] — acotado por
+    # COMMIT, no por fila de archivo: un límite de filas subestimaba cuántos
+    # commits distintos entraban (un repo con ~5 archivos/commit en promedio
+    # dejaba "recent" cubriendo solo ~10 commits con un límite de 50 filas),
+    # así que preguntas de chat como "¿qué commits hizo tal autor?" no veían
+    # sus commits más viejos aunque estuvieran sincronizados.
+    commits_recent_limit: int = 50
 
     @field_validator(
         "repos_dir", "index_dir", "reports_dir", "guidelines_dir", "skills_dir",
@@ -107,6 +148,11 @@ class Settings(BaseSettings):
     def checkpointer_path(self) -> Path:
         """Ruta del checkpointer SQLite de LangGraph (memoria por thread)."""
         return self.index_dir / "checkpoints.sqlite"
+
+    @property
+    def commits_db_path(self) -> Path:
+        """Ruta de la base SQLite de metadata de commits (insights/dashboards)."""
+        return self.index_dir / "commits.sqlite"
 
     def ensure_dirs(self) -> None:
         """Crea las carpetas de datos si no existen."""

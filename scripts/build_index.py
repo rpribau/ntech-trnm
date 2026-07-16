@@ -33,6 +33,17 @@ def main() -> None:
     )
     if stats.get("note"):
         console.print(f"[yellow]{stats['note']}[/yellow]")
+    for rm in stats.get("repomap", []):
+        langs = ", ".join(rm["languages"]) or "(sin lenguajes soportados)"
+        extra = (
+            f" · {rm['excluded_vendored']} archivos vendorizados excluidos"
+            if rm["excluded_vendored"]
+            else ""
+        )
+        console.print(
+            f"  [dim]repo map[/dim] {rm['repo']}: {rm['n_files']} archivos · "
+            f"{rm['n_edges']} referencias cruzadas · {langs}{extra}"
+        )
 
 
 if __name__ == "__main__":

@@ -40,10 +40,24 @@ dependencies = [
   # Análisis estático (usado en runtime por el agente)
   "ruff>=0.6.0",
   "radon>=6.0.1",
+  # Repo map (tree-sitter + PageRank, calculado offline en build_index)
+  "tree-sitter>=0.23",
+  # OJO: pineado a 0.13.x deliberadamente. Las versiones 1.x de este paquete
+  # (con su API process()/SymbolInfo) tienen un bug real de corrupción de
+  # memoria en Windows: Node.start_point/end_point devuelven valores basura
+  # (confirmado con un segfault reproducible contra el repo real ws-mex). La
+  # API get_parser()/get_language() de 0.13.x es más simple y no lo tiene.
+  "tree-sitter-language-pack==0.13.0",
+  "networkx>=3.2",
+  "numpy>=1.26",  # networkx.pagerank usa el backend scipy/numpy, no es opcional en la práctica
   # UI / CLI
   "streamlit>=1.37.0",
   "typer>=0.12.0",
   "rich>=13.7.0",
+  # Dashboard de insights (tab Insights): ambas ya son dependencias transitivas
+  # de streamlit, pero nuestro propio código las importa directamente ahora.
+  "pandas>=2.0.0",
+  "altair>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -63,6 +77,7 @@ ntech-sync = "scripts.sync_repos:main"
 ntech-index = "scripts.build_index:main"
 ntech-review = "scripts.run_review:main"
 ntech-eval = "scripts.eval:main"
+ntech-sync-commits = "scripts.sync_commits:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ntech_agent", "config", "scripts"]
