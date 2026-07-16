@@ -112,15 +112,31 @@ def get_chat_model(
             raise RuntimeError("NTECH_ANTHROPIC_API_KEY no está configurado en .env")
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(
+        # Opus 4.6+/Sonnet 5/Fable 5 ya no aceptan `temperature` (400 si se envía):
+        # el sampling se controla con prompting, no con este parámetro. Se omite
+        # aquí para todos los modelos Anthropic en vez de mantener una lista de
+        # excepciones por modelo.
+        kwargs: dict = dict(
             model=settings.anthropic_model,
             api_key=settings.anthropic_api_key,
-            temperature=temperature,
             max_tokens=max_tokens,
             streaming=streaming,
             timeout=600,
             max_retries=2,
         )
+        # Desactivar thinking explícitamente: en Sonnet 5 (y otros modelos 4.6+)
+        # el thinking adaptativo viene ENCENDIDO por defecto si se omite el
+        # parámetro, lo cual (a) puede agotar max_tokens solo pensando, dejando
+        # la respuesta vacía, y (b) rompe el structured output (Anthropic exige
+        # tool_choice="auto" con thinking activo, y with_structured_output puede
+        # forzar una tool). No necesitamos razonamiento extendido para
+        # routing/rerank/reportes. Fable 5 / Mythos 5 son la excepción: rechazan
+        # el "disabled" explícito (400) porque en esos modelos el thinking
+        # siempre está encendido.
+        model_lower = settings.anthropic_model.lower()
+        if "fable" not in model_lower and "mythos" not in model_lower:
+            kwargs["thinking"] = {"type": "disabled"}
+        return ChatAnthropic(**kwargs)
 
     if settings.llm_backend == "cloudrun":
         if not settings.cloudrun_url:
@@ -145,12 +161,38 @@ def get_chat_model(
     )
 
 
+def extract_text(content: object) -> str:
+    """Extrae el texto de una respuesta de chat, sea ``str`` o lista de bloques.
+
+    Algunos modelos (p. ej. Claude con thinking activo) devuelven ``.content``
+    como una lista de bloques (``{"type": "thinking", ...}``, ``{"type": "text",
+    ...}``). Usar la lista directamente en un f-string imprime su ``repr()``
+    crudo; esta función se queda solo con el texto legible.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        text = "\n".join(p for p in parts if p)
+        return text or "_(el modelo no devolvió texto — revisa max_tokens/thinking)_"
+    return str(content)
+
+
 def ping() -> dict:
     """Smoke test: pide una respuesta mínima al modelo activo."""
     settings = get_settings()
     llm = get_chat_model(max_tokens=16, settings=settings)
     resp = llm.invoke("Responde solo con: OK")
-    return {"backend": settings.llm_backend, "model": settings.active_model, "reply": resp.content}
+    return {
+        "backend": settings.llm_backend,
+        "model": settings.active_model,
+        "reply": extract_text(resp.content),
+    }
 
 
 if __name__ == "__main__":  # python -m ntech_agent.llm

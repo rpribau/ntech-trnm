@@ -9,11 +9,8 @@ from pydantic import BaseModel, Field
 from config.settings import Settings, get_settings
 from ntech_agent.analysis.static import format_for_prompt, run_static_analysis
 from ntech_agent.graph.state import AgentState
-from ntech_agent.llm import get_chat_model
+from ntech_agent.llm import extract_text, get_chat_model
 from ntech_agent.retrieval.hybrid import retrieve_guidelines, search
-
-_CTX_CHARS = 900
-_MAX_CTX_DOCS = 8
 
 
 # --------------------------------------------------------------------------- #
@@ -31,11 +28,11 @@ def load_skill(settings: Settings | None = None) -> str:
     return "\n".join(parts)
 
 
-def _format_context(docs: list[Document]) -> str:
+def _format_context(docs: list[Document], settings: Settings) -> str:
     out = []
-    for d in docs[:_MAX_CTX_DOCS]:
+    for d in docs[: settings.ctx_max_docs]:
         bc = d.metadata.get("breadcrumb", d.metadata.get("path", "?"))
-        out.append(f"### {bc}\n{d.page_content[:_CTX_CHARS]}")
+        out.append(f"### {bc}\n{d.page_content[: settings.ctx_chars]}")
     return "\n\n".join(out) if out else "(sin contexto recuperado)"
 
 
@@ -111,11 +108,13 @@ def reviewer_node(state: AgentState, config=None) -> dict:
     settings = get_settings()
     repo = state.get("repo") or "(sin repo)"
     guidelines = retrieve_guidelines(
-        f"buenas prácticas, design patterns y code smells para {repo}", k=4, settings=settings
+        f"buenas prácticas, design patterns y code smells para {repo}",
+        k=settings.reviewer_guidelines_k,
+        settings=settings,
     )
     static_txt = format_for_prompt(state.get("static_findings", {}))
-    code_ctx = _format_context(state.get("retrieved", []))
-    guide_ctx = _format_context(guidelines)
+    code_ctx = _format_context(state.get("retrieved", []), settings)
+    guide_ctx = _format_context(guidelines, settings)
 
     prompt = (
         f"{load_skill(settings)}\n\n"
@@ -129,14 +128,22 @@ def reviewer_node(state: AgentState, config=None) -> dict:
     )
 
     try:
-        llm = get_chat_model(temperature=0.1, max_tokens=2048, settings=settings)
+        llm = get_chat_model(
+            temperature=settings.reviewer_temperature,
+            max_tokens=settings.reviewer_max_tokens,
+            settings=settings,
+        )
         review: _Review = llm.with_structured_output(_Review).invoke(prompt)
         return {"review": _render_review(review)}
     except Exception:
         # Fallback a texto libre si el structured output falla en el modelo local.
-        llm = get_chat_model(temperature=0.1, max_tokens=2048, settings=settings)
+        llm = get_chat_model(
+            temperature=settings.reviewer_temperature,
+            max_tokens=settings.reviewer_max_tokens,
+            settings=settings,
+        )
         resp = llm.invoke(prompt + "\n\nResponde en markdown estructurado.")
-        return {"review": resp.content}
+        return {"review": extract_text(resp.content)}
 
 
 def synthesize_node(state: AgentState, config=None) -> dict:
@@ -153,7 +160,7 @@ def synthesize_node(state: AgentState, config=None) -> dict:
         )
         return {"answer": answer, "messages": [AIMessage(content=answer)]}
 
-    ctx = _format_context(docs)
+    ctx = _format_context(docs, settings)
     static_txt = format_for_prompt(state.get("static_findings", {})) if state.get(
         "static_findings"
     ) else ""
@@ -183,7 +190,11 @@ def synthesize_node(state: AgentState, config=None) -> dict:
         + "Responde en español, en markdown, sin inventar información fuera del contexto."
     )
 
-    llm = get_chat_model(temperature=0.2, max_tokens=1536, settings=settings)
+    llm = get_chat_model(
+        temperature=settings.synthesize_temperature,
+        max_tokens=settings.synthesize_max_tokens,
+        settings=settings,
+    )
     resp = llm.invoke(prompt)
-    answer = f"{resp.content}\n\n## Fuentes\n{citations}"
+    answer = f"{extract_text(resp.content)}\n\n## Fuentes\n{citations}"
     return {"answer": answer, "messages": [AIMessage(content=answer)]}

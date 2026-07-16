@@ -10,7 +10,13 @@
       "WebSearch",
       "Skill(claude-api)",
       "Skill(claude-api:*)",
-      "Bash(PYTHONPATH=C:/Users/rprie/OneDrive/Documents/Tesis/ntech-trnm C:/Users/rprie/AppData/Local/Temp/claude/C--Users-rprie-OneDrive-Documents-Tesis-ntech-trnm/ec218699-1c44-4eef-a871-59f128d6ffe0/scratchpad/venv/Scripts/python.exe -c ' *)"
+      "Bash(PYTHONPATH=C:/Users/rprie/OneDrive/Documents/Tesis/ntech-trnm C:/Users/rprie/AppData/Local/Temp/claude/C--Users-rprie-OneDrive-Documents-Tesis-ntech-trnm/ec218699-1c44-4eef-a871-59f128d6ffe0/scratchpad/venv/Scripts/python.exe -c ' *)",
+      "Bash(python -m compileall -q ntech_agent)",
+      "Bash(python -m pytest -q)",
+      "Bash(python -m py_compile config/settings.py ntech_agent/graph/nodes.py ntech_agent/graph/supervisor.py)",
+      "Bash(git --no-pager diff --stat)",
+      "Bash(git --no-pager diff config/settings.py .env.example ntech_agent/graph/nodes.py ntech_agent/graph/supervisor.py)",
+      "Bash(python -m ruff check config/settings.py ntech_agent/graph/nodes.py ntech_agent/graph/supervisor.py .env.example)"
     ]
   }
 }

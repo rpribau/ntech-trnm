@@ -77,6 +77,17 @@ class Settings(BaseSettings):
     # ---- Análisis estático ----
     static_analysis_enabled: bool = True
 
+    # ---- Prompts / generación (nodos del grafo) ----
+    ctx_chars: int = 900  # truncado por doc al armar el contexto de un prompt
+    ctx_max_docs: int = 8  # máx. docs recuperados incluidos en el contexto
+    reviewer_guidelines_k: int = 4  # guidelines recuperadas para reviewer_node
+    router_temperature: float = 0.0
+    router_max_tokens: int = 256
+    reviewer_temperature: float = 0.1
+    reviewer_max_tokens: int = 2048
+    synthesize_temperature: float = 0.2
+    synthesize_max_tokens: int = 1536
+
     @field_validator(
         "repos_dir", "index_dir", "reports_dir", "guidelines_dir", "skills_dir",
         mode="after",

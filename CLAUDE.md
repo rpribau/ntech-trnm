@@ -10,11 +10,21 @@ by RAG over guidelines + the org's code, and produces markdown/PDF reports with
 citations. Everything is in Spanish (docstrings, prompts, CLI output, guidelines) —
 match that when editing prompts, docs, or user-facing strings.
 
-Split architecture: only LLM inference runs in the cloud (GCP Cloud Run, GPU L4,
-scale-to-zero, vLLM serving `Qwen3-Coder-30B-A3B`); everything else (embeddings,
-RAG, static analysis, LangGraph orchestration, UI) runs locally and cheaply. Both
-backends (`cloudrun` and `ollama`) speak the OpenAI-compatible API, so
-`ntech_agent/llm.py` is the only place that knows which one is active.
+Split architecture: everything except LLM inference (embeddings, RAG, static
+analysis, LangGraph orchestration, GitHub, UI) runs locally and cheaply. The **LLM
+backend is swappable** via `NTECH_LLM_BACKEND` and `ntech_agent/llm.py::get_chat_model`
+is the only place that knows which one is active — it returns a LangChain
+`BaseChatModel`, so the rest of the code (`invoke`, `with_structured_output`) is
+backend-agnostic:
+- `cloudrun` — self-hosted vLLM serving `Qwen3-Coder-30B-A3B` on GCP Cloud Run
+  (GPU L4, scale-to-zero); OpenAI-compatible → `ChatOpenAI` pointed at the Cloud Run
+  URL with an IAM ID-token as the bearer.
+- `ollama` — local model on the user's hardware; OpenAI-compatible → `ChatOpenAI`
+  pointed at `localhost:11434`.
+- `anthropic` — Anthropic's Claude API (`langchain_anthropic.ChatAnthropic`); **not**
+  OpenAI-compatible, but same LangChain interface. Note: Opus 4.6+/Sonnet 5/Fable 5
+  reject `temperature` (400), so the Anthropic branch omits it deliberately — do not
+  re-add sampling params there.
 
 ## Setup & commands
 
@@ -46,9 +56,11 @@ pytest tests/test_chunking.py::test_chunk_ids_are_deterministic  # single test
 ruff check .                 # select = E,F,I,UP,B; line-length 100; py311
 ```
 
-Cheap/offline dev: set `NTECH_LLM_BACKEND=ollama` in `.env` and run a small local
-model (`ollama pull qwen2.5-coder:7b`) — no code changes needed, same `ChatOpenAI`
-client path either way.
+Switching LLM backend: set `NTECH_LLM_BACKEND` in `.env` to `cloudrun`, `ollama`,
+or `anthropic` — no code changes needed. `ollama` needs a local model pulled
+(`ollama pull qwen2.5-coder:7b`); `anthropic` needs `NTECH_ANTHROPIC_API_KEY` (a
+console.anthropic.com key with prepaid credit — separate from a Claude Pro/Max
+subscription). Smoke-test the active backend with `python -m ntech_agent.llm`.
 
 Deploying/updating the cloud model (`deploy/deploy.sh`, GCP-billed, semi-irreversible
 — confirm with the user before running):

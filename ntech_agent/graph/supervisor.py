@@ -63,7 +63,11 @@ def route_node(state: AgentState, config=None) -> dict:
     )
 
     try:
-        llm = get_chat_model(temperature=0.0, max_tokens=256, settings=settings)
+        llm = get_chat_model(
+            temperature=settings.router_temperature,
+            max_tokens=settings.router_max_tokens,
+            settings=settings,
+        )
         result: _Route = llm.with_structured_output(_Route).invoke(prompt)
         route, repo = result.route, result.repo
     except Exception:
