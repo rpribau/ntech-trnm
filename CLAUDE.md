@@ -80,16 +80,17 @@ re-reading env vars, and construct a fresh `Settings()` in tests instead of muta
 the cached singleton.
 
 **LangGraph pipeline** (`ntech_agent/graph/`): a linear graph —
-`router → retrieve → repomap → static → reviewer → synthesize → END` — compiled once
-and cached in `builder.py::get_graph`, persisted via a SQLite checkpointer (falls back
-to `MemorySaver` if unavailable) so conversations have per-thread memory. Nodes are
-pure functions of `AgentState` (a `TypedDict` in `graph/state.py`) that return partial
-state updates; `repomap`, `static` and `reviewer` no-op (return `{}`) unless
-`state["route"]` calls for them, rather than being conditionally wired as separate
-graph edges — keep that self-skipping pattern if you add nodes.
+`router → retrieve → repomap → static → reviewer → commits → synthesize → END` —
+compiled once and cached in `builder.py::get_graph`, persisted via a SQLite
+checkpointer (falls back to `MemorySaver` if unavailable) so conversations have
+per-thread memory. Nodes are pure functions of `AgentState` (a `TypedDict` in
+`graph/state.py`) that return partial state updates; `repomap`, `static`, `reviewer`
+and `commits` no-op (return `{}`) unless `state["route"]` calls for them, rather than
+being conditionally wired as separate graph edges — keep that self-skipping pattern
+if you add nodes.
 
 - `supervisor.py::route_node` — classifies the query into one of
-  `summary | review | org_report | assist` and fuzzy-matches ALL repos mentioned
+  `summary | review | org_report | assist | commits` and fuzzy-matches ALL repos mentioned
   (`_Route.repos: list[str]`, `difflib` per name) against repos already cloned in
   `data/repos/`, deduping matches that resolve to the same repo (a typo + the exact
   name both matching `ws-arg` must not look like 2 different repos). `state["repo"]`
@@ -102,12 +103,20 @@ graph edges — keep that self-skipping pattern if you add nodes.
   context is fetched. Falls back to keyword heuristics if structured-output
   classification fails (small/local models are unreliable at tool calling); the
   fallback never populates `repos` (pre-existing limitation, not fixed here).
-- `nodes.py::repomap_node` — only runs on `route == "review"`; replaces the chunk-level
-  `state["retrieved"]` with **complete files** chosen by PageRank over the repo's
-  dependency graph (see "Repo map" below), boosted by whatever RAG already retrieved
-  as seeds. Self-skips (leaving the chunk-based `retrieved` intact) if the repo has too
-  few files with extracted symbols (e.g. a notebook-only repo) or `NTECH_REPOMAP_ENABLED`
-  is off.
+  `commits` is a distinct route from `review` — it's about activity/history ("último
+  commit", "quién participa", "actividad reciente"), never code quality; the
+  keyword fallback checks for it before `review`/`org_report`/`summary` so a
+  transient structured-output failure on an activity question doesn't misroute it.
+- `nodes.py::repomap_node` — runs on `route in {"review", "summary", "assist"}` (not just
+  `review`). In all three it can populate `state["repomap_skeleton"]`, a signatures-only
+  index of every file in the repo (see "Repo map" below), and can prepend a handful of
+  **complete files** to `state["retrieved"]` via directed expansion. Only on `route ==
+  "review"` does it additionally *replace* the chunk-level `retrieved` outright with
+  **complete files** chosen by PageRank over the repo's dependency graph, boosted by
+  whatever RAG already retrieved as seeds — that replacement stays review-only because
+  of its cost; the skeleton/expansion is cheap enough to run on every single-repo query.
+  Self-skips entirely if there's no repo, `NTECH_REPOMAP_ENABLED` is off, or the repo map
+  JSON doesn't exist for the repo.
 - `nodes.py::reviewer_node` — only runs on `route == "review"`; loads the Skill
   (`skills/code_best_practices/SKILL.md` + `rubric.yaml`), combines retrieved code +
   retrieved guidelines + static-analysis findings into one prompt, and asks for
@@ -115,6 +124,16 @@ graph edges — keep that self-skipping pattern if you add nodes.
   fallback if structured output fails. On success it also stores the structured dump in
   `state["review_data"]` (used by the executive report — see "Reports" below); the chat
   rendering (`_render_review`) is a separate, deliberately compact view of the same data.
+- `nodes.py::commit_insights_node` — runs on `route == "commits"`; loads deterministic
+  SQL facts (last commit, contributors, weekly activity, recent commits with any
+  already-generated summaries) per mentioned repo from `ntech_agent/commits/query.py`
+  — no RAG, no LLM call in this node itself. `synthesize_node` special-cases
+  `route == "commits"` **before** the multi-repo and `review` branches (a commits
+  question about 2+ repos must answer from `commit_facts`, not fall into the
+  RAG-based multi-repo comparison path) and calls `_answer_commits_question`, which
+  only asks the LLM to *phrase* an answer over those already-computed facts — it
+  never lets the model invent dates, authors, or commit counts. See "Commit metadata
+  & insights dashboard" below for where `commit_facts` actually comes from.
 - Every LLM call in this codebase that uses `with_structured_output` has a
   `try/except` fallback to plain-text or pass-through behavior — this is deliberate,
   not defensive bloat, because the local/small-model backend is unreliable at
@@ -197,13 +216,104 @@ a real multi-hundred-line file first. Tree walks in `tags.py` use `tree.walk()`
 (`TreeCursor`) rather than holding many `Node` objects in a Python-level stack/list —
 that pattern also corrupted memory in testing, independent of the version bug above.
 
-**GitHub integration** is two separate paths, not one: `github/client.py` +
-`github/sync.py` use PyGithub + shallow git clones for the RAG corpus
-(`data/repos/`); `github/mcp.py` wraps the hosted GitHub MCP server
-(`langchain-mcp-adapters`) for live queries (issues/PRs/commits) that shouldn't wait
-for a re-index. `sync.py` is careful never to persist the PAT in `.git/config` or
-error messages (injects token into the clone URL only for the git operation, then
-strips it) — preserve that when touching sync/clone logic.
+Two more repo-map features build on that same offline-computed data and run at query
+time for `route in {"review", "summary", "assist"}` (not just `review`):
+
+- `repomap/skeleton.py::render_repo_skeleton` — a signatures-only index (no function
+  bodies) of **every** file in the repo that has extracted symbols, not just the
+  PageRank top-N. Reuses the `symbols` field already persisted per file in the repo map
+  JSON (`build.py` writes it; nothing read it before this feature) — no extra
+  tree-sitter work at query time. Solves a real blind spot of pure PageRank selection: a
+  rarely-referenced file (e.g. a header defining a class interface that almost nothing
+  else imports) has structurally low PageRank and never makes the top-N unless RAG
+  happens to retrieve it by semantic similarity — the skeleton gives the reviewer
+  visibility into that file's existence and shape regardless of ranking. Nesting (e.g. a
+  method under its class) is inferred by line-range containment, since `Symbol` carries
+  no parent/child relationship. Truncates gracefully — never returns an empty index just
+  because a repo is large — capped by `NTECH_REPOMAP_SKELETON_MAX_FILES` (file count)
+  and `NTECH_REPOMAP_SKELETON_MAX_CHARS` (total rendered size); per-file symbol count is
+  capped separately by `NTECH_REPOMAP_SKELETON_MAX_SYMBOLS_PER_FILE`. Lives in its own
+  `AgentState["repomap_skeleton"]` field (a plain string), deliberately *not* a
+  `Document` in `retrieved` — a `Document` per file would compete for `ctx_max_docs`
+  slots against real chunks/full-files and would pollute `_citations()` with one entry
+  per file in the repo. Unlike the PageRank replacement above, skeleton generation is
+  deliberately **not** gated by `NTECH_REPOMAP_MIN_FILES_FOR_RANK` — that threshold
+  protects the *ranking's* quality (PageRank with too few nodes is noise) and doesn't
+  apply to an index that doesn't rank anything; a repo with a single symbol-bearing file
+  is exactly the case where showing its skeleton matters most.
+- `repomap/expansion.py::select_expansion_files` — one bounded, structured-output LLM
+  call (not an open-ended tool-calling loop — this codebase already treats small/local
+  models as unreliable at tool-calling, see the router fallback above) that, given the
+  skeleton and the user's question, can name up to `NTECH_REPOMAP_EXPANSION_MAX_FILES`
+  files to read in full even though they never won the PageRank top-N nor were retrieved
+  by RAG. Requested paths are normalized and validated against the repo's real file list
+  before being read — never trusts the LLM's paths at face value. Unlike most
+  structured-output calls in this codebase, a failure here only needs a single
+  `try/except`, not the double-layer fallback described below: the result is an optional
+  context enrichment the user never sees directly, so on failure it just logs and
+  returns no expansion instead of needing a second LLM call to produce a fallback
+  answer. Chosen files are prepended (not appended) to `retrieved` and read via the same
+  `source_type: "repomap_file"` `Document` shape as the PageRank top-N, so
+  `nodes.py::_format_context` and `_citations()` don't need to distinguish the two
+  origins — `_format_context` treats any `"repomap_file"` doc as always-included when
+  trimming to `ctx_max_docs` (filling the remaining budget with regular chunks) rather
+  than relying on insertion order, since a plain prepend alone is fragile against future
+  code that also prepends something before context gets formatted.
+
+**GitHub integration** is three separate paths, not one or two — each hits a
+different GitHub surface for a different reason, don't collapse them:
+- `github/client.py` + `github/sync.py` — PyGithub + shallow (`--depth 1`) git clones
+  for the RAG corpus (`data/repos/`); no commit history by design, since this path
+  only ever feeds the current-state chunking/repo-map pipeline.
+- `github/mcp.py` — wraps the hosted GitHub MCP server (`langchain-mcp-adapters`) to
+  expose issues/PRs/commits/file-content as LangChain tools. **Not wired into any
+  graph node today** — it's a prepared integration point, smoke-testable on its own
+  via `python -m ntech_agent.github.mcp`, but no route currently calls it. Don't
+  assume "live GitHub queries" happen in production; they don't yet.
+- `ntech_agent/commits/` — a separate ETL against the GitHub REST API (neither the
+  shallow clone nor the MCP server) that actually powers commit-history questions
+  today, both in chat and in the UI. See "Commit metadata & insights dashboard" below.
+
+`sync.py` is careful never to persist the PAT in `.git/config` or error messages
+(injects token into the clone URL only for the git operation, then strips it) —
+preserve that when touching sync/clone logic.
+
+**Commit metadata & insights dashboard** (`ntech_agent/commits/`): a **fourth**,
+independent SQLite database (`commits/db.py`, schema `commit_files` + `sync_state` —
+distinct from both the Chroma/BM25 RAG index and the LangGraph checkpointer DB) backs
+commit-activity questions in chat (`route == "commits"`) and a dedicated "Insights"
+tab in the UI (`ui/insights_tab.py`). Built as its own pipeline rather than reusing
+`github/sync.py`'s shallow clone (no history by design) or `github/mcp.py` (not
+wired in, and not suited to bulk backfill/aggregation anyway):
+
+- `commits/extract.py::sync_commits_for_repo` — Phase 1: pulls commits via the GitHub
+  REST API (PyGithub, `since=` cursor from `sync_state.last_synced_at`, or
+  `NTECH_COMMITS_LOOKBACK_DAYS` on first run) and inserts one row per
+  `(repo, commit_sha, file_path)` into `commit_files` (`INSERT OR IGNORE` for
+  idempotency). Uses the REST API specifically because it resolves the author's real
+  GitHub login and exposes per-file `status` without needing to unshallow the local
+  clone.
+- `commits/summarize.py::summarize_new_commits` — Phase 2 (gated by
+  `NTECH_COMMITS_SUMMARIZE_ENABLED`): one LLM call **per commit**, not per file, with
+  every changed file's patch, asking for a structured `{file_path, resumen}` list —
+  same double-layer `try/except` fallback pattern as `reviewer_node`, except on total
+  failure it leaves `summary` NULL (retried on the next sync) instead of writing a
+  placeholder, since this feeds an internal table rather than a direct user-facing
+  answer. Commits touching more than `NTECH_COMMITS_MAX_FILES_PER_COMMIT` files (big
+  merges, vendor dumps) are deliberately left unsummarized rather than burning LLM
+  budget on them.
+- `commits/query.py` — read-only SQL over `commit_files` (last commit, contributors,
+  weekly activity, hotspot files), shared verbatim by `nodes.py::commit_insights_node`
+  (chat) and `ui/insights_tab.py` (dashboard) so the SQL isn't duplicated in two places.
+- `commits/analytics.py` — pandas transforms over the same rows (daily/weekly
+  activity, top contributors, top files, change-type breakdown), used only by the
+  Streamlit Insights tab; kept separate from `query.py` so aggregation logic can be
+  unit-tested against synthetic DataFrames without touching SQLite.
+- Sync is manual/scheduled via `python -m scripts.sync_commits` (not yet exposed as an
+  `ntech-*` console script) or the "🔄 Sincronizar commits" button in the Insights tab
+  — it is **not** triggered by `build_index`, and asking a "commits" question in chat
+  does **not** sync on demand; `commit_insights_node` only reads whatever is already
+  in `commit_files`.
 
 **Reports** (`ntech_agent/report/`) are **executive** documents for non-technical
 stakeholders, not a dump of the technical review: 5 fixed sections (Introducción,

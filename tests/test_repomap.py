@@ -6,7 +6,9 @@ from langchain_core.documents import Document
 
 from config.settings import Settings
 from ntech_agent.repomap.build import build_repo_map, load_repo_map
+from ntech_agent.repomap.expansion import _ExpansionRequest, select_expansion_files
 from ntech_agent.repomap.graph import graph_from_edges, rank_files
+from ntech_agent.repomap.skeleton import _nest_symbols, render_repo_skeleton
 from ntech_agent.repomap.tags import (
     extract_definitions,
     extract_references,
@@ -269,13 +271,16 @@ def test_repomap_node_replaces_retrieved_with_full_files(tmp_path, monkeypatch):
     assert all(d.metadata["source_type"] == "repomap_file" for d in result["retrieved"])
 
 
-def test_repomap_node_skips_when_not_review_route(tmp_path, monkeypatch):
+def test_repomap_node_skips_when_route_not_relevant(tmp_path, monkeypatch):
+    # summary/assist/review sí generan skeleton desde este cambio — solo rutas
+    # fuera de _REPOMAP_ROUTES (ej. commits, org_report) siguen autosalteándose.
     from ntech_agent.graph.nodes import repomap_node
 
     settings = _repomap_settings(tmp_path)
     monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
 
-    assert repomap_node({"route": "summary", "repo": "demo", "retrieved": []}) == {}
+    assert repomap_node({"route": "commits", "repo": "demo", "retrieved": []}) == {}
+    assert repomap_node({"route": "org_report", "repo": "demo", "retrieved": []}) == {}
 
 
 def test_repomap_node_skips_when_repo_below_min_files(tmp_path, monkeypatch):
@@ -306,3 +311,393 @@ def test_repomap_node_skips_when_disabled(tmp_path, monkeypatch):
     monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
 
     assert repomap_node({"route": "review", "repo": "demo", "retrieved": []}) == {}
+
+
+# --------------------------------------------------------------------------- #
+# skeleton.py
+# --------------------------------------------------------------------------- #
+def test_nest_symbols_infers_class_method_containment():
+    symbols = [
+        {"name": "Foo", "kind": "class", "start_line": 1, "end_line": 20},
+        {"name": "bar", "kind": "function", "start_line": 2, "end_line": 5},
+        {"name": "baz", "kind": "function", "start_line": 25, "end_line": 30},
+    ]
+    nested = _nest_symbols(symbols)
+    depths = {s["name"]: s["_depth"] for s in nested}
+    assert depths == {"Foo": 0, "bar": 1, "baz": 0}
+
+
+def test_render_repo_skeleton_lists_all_files_with_symbols(tmp_path):
+    repo_dir = tmp_path / "repos" / "demo-skel"
+    _write(repo_dir / "a.py", "def entry():\n    helper()\n")
+    _write(repo_dir / "b.py", "def helper():\n    pass\n")
+    settings = _repomap_settings(tmp_path)
+    build_repo_map("demo-skel", settings)
+    data = load_repo_map("demo-skel", settings)
+
+    skeleton = render_repo_skeleton(data, settings)
+    assert "a.py" in skeleton and "entry" in skeleton
+    assert "b.py" in skeleton and "helper" in skeleton
+
+
+def test_render_repo_skeleton_omits_files_without_symbols(tmp_path):
+    repo_dir = tmp_path / "repos" / "demo-empty"
+    _write(repo_dir / "has_defs.py", "def foo():\n    pass\n")
+    _write(repo_dir / "no_defs.py", "x = 1\n")
+    settings = _repomap_settings(tmp_path)
+    build_repo_map("demo-empty", settings)
+    data = load_repo_map("demo-empty", settings)
+
+    skeleton = render_repo_skeleton(data, settings)
+    assert "has_defs.py" in skeleton
+    assert "no_defs.py" not in skeleton
+
+
+def test_render_repo_skeleton_caps_symbols_per_file(tmp_path):
+    repo_dir = tmp_path / "repos" / "demo-cap"
+    _write(repo_dir / "a.py", "def one():\n    pass\n\n\ndef two():\n    pass\n")
+    build_settings = _repomap_settings(tmp_path)
+    build_repo_map("demo-cap", build_settings)
+    data = load_repo_map("demo-cap", build_settings)
+
+    settings = Settings(
+        _env_file=None,
+        repos_dir=tmp_path / "repos",
+        index_dir=tmp_path / "index",
+        repomap_skeleton_max_symbols_per_file=1,
+    )
+    skeleton = render_repo_skeleton(data, settings)
+    assert "one" in skeleton
+    assert "two" not in skeleton
+    assert "(+1 símbolos más)" in skeleton
+
+
+def test_render_repo_skeleton_truncates_files_when_over_max_files_cap(tmp_path):
+    repo_dir = tmp_path / "repos" / "demo-many"
+    _write(repo_dir / "a.py", "def a_fn():\n    pass\n")
+    _write(repo_dir / "b.py", "def b_fn():\n    pass\n")
+    _write(repo_dir / "c.py", "def c_fn():\n    pass\n")
+    build_settings = _repomap_settings(tmp_path)
+    build_repo_map("demo-many", build_settings)
+    data = load_repo_map("demo-many", build_settings)
+
+    settings = Settings(
+        _env_file=None,
+        repos_dir=tmp_path / "repos",
+        index_dir=tmp_path / "index",
+        repomap_skeleton_max_files=2,
+    )
+    skeleton = render_repo_skeleton(data, settings)
+    assert skeleton != ""
+    assert "a.py" in skeleton
+    assert "b.py" in skeleton
+    assert "c.py" not in skeleton
+    assert "omitidos por límite de tamaño" in skeleton
+
+
+def test_render_repo_skeleton_empty_when_no_files():
+    settings = Settings(_env_file=None)
+    assert render_repo_skeleton({"files": []}, settings) == ""
+
+
+# --------------------------------------------------------------------------- #
+# expansion.py
+# --------------------------------------------------------------------------- #
+class _FakeExpansionLLM:
+    def __init__(self, paths):
+        self._paths = paths
+
+    def invoke(self, prompt):
+        return _ExpansionRequest(paths=self._paths)
+
+
+class _FakeExpansionChatModel:
+    def __init__(self, paths):
+        self._paths = paths
+
+    def with_structured_output(self, model):
+        return _FakeExpansionLLM(self._paths)
+
+
+def test_select_expansion_files_filters_invalid_and_duplicate_paths(monkeypatch):
+    monkeypatch.setattr(
+        "ntech_agent.repomap.expansion.get_chat_model",
+        lambda **kw: _FakeExpansionChatModel(["real.py", "real.py", "fake.py"]),
+    )
+    settings = Settings(_env_file=None)
+    chosen = select_expansion_files(
+        question="q",
+        skeleton="### real.py\ndef f  [L1-2]",
+        already_included=set(),
+        valid_paths={"real.py"},
+        settings=settings,
+    )
+    assert chosen == ["real.py"]
+
+
+def test_select_expansion_files_respects_max_files_cap(monkeypatch):
+    monkeypatch.setattr(
+        "ntech_agent.repomap.expansion.get_chat_model",
+        lambda **kw: _FakeExpansionChatModel(["a.py", "b.py", "c.py"]),
+    )
+    settings = Settings(_env_file=None, repomap_expansion_max_files=2)
+    chosen = select_expansion_files(
+        question="q",
+        skeleton="algo",
+        already_included=set(),
+        valid_paths={"a.py", "b.py", "c.py"},
+        settings=settings,
+    )
+    assert len(chosen) == 2
+
+
+def test_select_expansion_files_excludes_already_included(monkeypatch):
+    monkeypatch.setattr(
+        "ntech_agent.repomap.expansion.get_chat_model",
+        lambda **kw: _FakeExpansionChatModel(["a.py"]),
+    )
+    settings = Settings(_env_file=None)
+    chosen = select_expansion_files(
+        question="q",
+        skeleton="algo",
+        already_included={"a.py"},
+        valid_paths={"a.py"},
+        settings=settings,
+    )
+    assert chosen == []
+
+
+def test_select_expansion_files_normalizes_paths_before_validating(monkeypatch):
+    monkeypatch.setattr(
+        "ntech_agent.repomap.expansion.get_chat_model",
+        lambda **kw: _FakeExpansionChatModel(["./a.py"]),
+    )
+    settings = Settings(_env_file=None)
+    chosen = select_expansion_files(
+        question="q",
+        skeleton="algo",
+        already_included=set(),
+        valid_paths={"a.py"},
+        settings=settings,
+    )
+    assert chosen == ["a.py"]
+
+
+def test_select_expansion_files_returns_empty_on_llm_failure(monkeypatch):
+    def _raise(**kw):
+        raise RuntimeError("backend caído")
+
+    monkeypatch.setattr("ntech_agent.repomap.expansion.get_chat_model", _raise)
+    settings = Settings(_env_file=None)
+    chosen = select_expansion_files(
+        question="q",
+        skeleton="algo",
+        already_included=set(),
+        valid_paths={"a.py"},
+        settings=settings,
+    )
+    assert chosen == []
+
+
+def test_select_expansion_files_empty_skeleton_short_circuits(monkeypatch):
+    def _fail_if_called(**kw):
+        raise AssertionError("no debería llamar al LLM con skeleton vacío")
+
+    monkeypatch.setattr("ntech_agent.repomap.expansion.get_chat_model", _fail_if_called)
+    settings = Settings(_env_file=None)
+    chosen = select_expansion_files(
+        question="q", skeleton="", already_included=set(), valid_paths={"a.py"}, settings=settings
+    )
+    assert chosen == []
+
+
+def test_select_expansion_files_disabled_setting_short_circuits(monkeypatch):
+    def _fail_if_called(**kw):
+        raise AssertionError("no debería llamar al LLM si expansion está deshabilitada")
+
+    monkeypatch.setattr("ntech_agent.repomap.expansion.get_chat_model", _fail_if_called)
+    settings = Settings(_env_file=None, repomap_expansion_enabled=False)
+    chosen = select_expansion_files(
+        question="q",
+        skeleton="algo",
+        already_included=set(),
+        valid_paths={"a.py"},
+        settings=settings,
+    )
+    assert chosen == []
+
+
+# --------------------------------------------------------------------------- #
+# repomap_node — skeleton + expansión
+# --------------------------------------------------------------------------- #
+def test_repomap_node_sets_skeleton_for_review_route(tmp_path, monkeypatch):
+    from ntech_agent.graph.nodes import repomap_node
+
+    repo_dir = tmp_path / "repos" / "demo"
+    _write(repo_dir / "a.py", "def entry():\n    helper()\n")
+    _write(repo_dir / "b.py", "def helper():\n    pass\n")
+    settings = _repomap_settings(tmp_path)
+    build_repo_map("demo", settings)
+    monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ntech_agent.graph.nodes.select_expansion_files", lambda **kw: []
+    )
+
+    result = repomap_node({"route": "review", "repo": "demo", "retrieved": []})
+    assert "entry" in result["repomap_skeleton"]
+    assert "helper" in result["repomap_skeleton"]
+    assert "retrieved" in result  # top-N sigue corriendo sin cambios en review
+
+
+def test_repomap_node_sets_skeleton_for_summary_route_without_replacing_retrieved(
+    tmp_path, monkeypatch
+):
+    from ntech_agent.graph.nodes import repomap_node
+
+    repo_dir = tmp_path / "repos" / "demo"
+    _write(repo_dir / "a.py", "def entry():\n    pass\n")
+    settings = _repomap_settings(tmp_path)
+    build_repo_map("demo", settings)
+    monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ntech_agent.graph.nodes.select_expansion_files", lambda **kw: []
+    )
+
+    result = repomap_node({"route": "summary", "repo": "demo", "retrieved": []})
+    assert "entry" in result["repomap_skeleton"]
+    assert "retrieved" not in result  # summary no reemplaza retrieved (sin expansión)
+
+
+def test_repomap_node_sets_skeleton_for_assist_route(tmp_path, monkeypatch):
+    from ntech_agent.graph.nodes import repomap_node
+
+    repo_dir = tmp_path / "repos" / "demo"
+    _write(repo_dir / "a.py", "def entry():\n    pass\n")
+    settings = _repomap_settings(tmp_path)
+    build_repo_map("demo", settings)
+    monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ntech_agent.graph.nodes.select_expansion_files", lambda **kw: []
+    )
+
+    result = repomap_node({"route": "assist", "repo": "demo", "retrieved": []})
+    assert "entry" in result["repomap_skeleton"]
+
+
+def test_repomap_node_skeleton_still_runs_when_below_min_files_for_rank(tmp_path, monkeypatch):
+    # El test clave de la decisión de desacoplar: repo de 1 solo archivo con
+    # símbolos (por debajo de repomap_min_files_for_rank=2) sigue generando
+    # skeleton, aunque el top-N por PageRank no corra.
+    from ntech_agent.graph.nodes import repomap_node
+
+    repo_dir = tmp_path / "repos" / "solo"
+    _write(repo_dir / "a.py", "def entry():\n    pass\n")
+    settings = _repomap_settings(tmp_path)
+    build_repo_map("solo", settings)
+    monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ntech_agent.graph.nodes.select_expansion_files", lambda **kw: []
+    )
+
+    result = repomap_node({"route": "review", "repo": "solo", "retrieved": []})
+    assert "entry" in result["repomap_skeleton"]
+    assert "retrieved" not in result  # top-N no corrió (1 archivo < min_files_for_rank)
+
+
+def test_repomap_node_skeleton_disabled_setting_omits_skeleton_key(tmp_path, monkeypatch):
+    from ntech_agent.graph.nodes import repomap_node
+
+    repo_dir = tmp_path / "repos" / "demo"
+    _write(repo_dir / "a.py", "def entry():\n    helper()\n")
+    _write(repo_dir / "b.py", "def helper():\n    pass\n")
+    build_settings = _repomap_settings(tmp_path)
+    build_repo_map("demo", build_settings)
+    settings = Settings(
+        _env_file=None,
+        repos_dir=tmp_path / "repos",
+        index_dir=tmp_path / "index",
+        repomap_skeleton_enabled=False,
+    )
+    monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ntech_agent.graph.nodes.select_expansion_files", lambda **kw: []
+    )
+
+    result = repomap_node({"route": "review", "repo": "demo", "retrieved": []})
+    assert "repomap_skeleton" not in result
+
+
+def test_repomap_node_expansion_prepends_full_file_to_top_n_for_review(tmp_path, monkeypatch):
+    from ntech_agent.graph.nodes import repomap_node
+
+    repo_dir = tmp_path / "repos" / "demo"
+    _write(repo_dir / "a.py", "def entry():\n    pass\n")
+    _write(repo_dir / "rare.py", "def rarely_used():\n    pass\n")
+    build_settings = _repomap_settings(tmp_path)
+    build_repo_map("demo", build_settings)
+    settings = Settings(
+        _env_file=None,
+        repos_dir=tmp_path / "repos",
+        index_dir=tmp_path / "index",
+        repomap_top_files=1,
+    )
+    monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ntech_agent.graph.nodes.select_expansion_files", lambda **kw: ["rare.py"]
+    )
+
+    result = repomap_node({"route": "review", "repo": "demo", "retrieved": []})
+    paths = [d.metadata["path"] for d in result["retrieved"]]
+    assert "rare.py" in paths
+    assert paths[0] == "rare.py"  # antepuesto, sobrevive el corte de _format_context
+    assert all(d.metadata["source_type"] == "repomap_file" for d in result["retrieved"])
+
+
+def test_repomap_node_expansion_prepends_to_existing_chunks_for_summary_route(
+    tmp_path, monkeypatch
+):
+    from langchain_core.documents import Document
+
+    from ntech_agent.graph.nodes import repomap_node
+
+    repo_dir = tmp_path / "repos" / "demo"
+    _write(repo_dir / "a.py", "def entry():\n    pass\n")
+    _write(repo_dir / "rare.py", "def rarely_used():\n    pass\n")
+    settings = _repomap_settings(tmp_path)
+    build_repo_map("demo", settings)
+    monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ntech_agent.graph.nodes.select_expansion_files", lambda **kw: ["rare.py"]
+    )
+
+    chunk = Document(page_content="...", metadata={"repo": "demo", "path": "a.py"})
+    result = repomap_node({"route": "summary", "repo": "demo", "retrieved": [chunk]})
+    assert "retrieved" in result
+    paths = [d.metadata["path"] for d in result["retrieved"]]
+    assert paths[0] == "rare.py"  # expansión antepuesta a los chunks originales
+    assert "a.py" in paths  # el chunk original de RAG se conserva
+
+
+def test_repomap_node_expansion_disabled_setting_never_calls_select_expansion_files(
+    tmp_path, monkeypatch
+):
+    from ntech_agent.graph.nodes import repomap_node
+
+    def _fail_if_called(**kw):
+        raise AssertionError("no debería llamar a select_expansion_files")
+
+    repo_dir = tmp_path / "repos" / "demo"
+    _write(repo_dir / "a.py", "def entry():\n    pass\n")
+    build_settings = _repomap_settings(tmp_path)
+    build_repo_map("demo", build_settings)
+    settings = Settings(
+        _env_file=None,
+        repos_dir=tmp_path / "repos",
+        index_dir=tmp_path / "index",
+        repomap_expansion_enabled=False,
+    )
+    monkeypatch.setattr("ntech_agent.graph.nodes.get_settings", lambda: settings)
+    monkeypatch.setattr("ntech_agent.graph.nodes.select_expansion_files", _fail_if_called)
+
+    result = repomap_node({"route": "review", "repo": "demo", "retrieved": []})
+    assert "repomap_skeleton" in result  # no crashea, solo se salteó la expansión

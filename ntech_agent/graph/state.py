@@ -23,6 +23,12 @@ class AgentState(TypedDict, total=False):
     repos: list[str]
     # Documentos recuperados por RAG.
     retrieved: list[Document]
+    # Vista "índice" (solo firmas, sin cuerpo) de TODOS los archivos con símbolos
+    # del repo — cobertura estructural 100%, a diferencia del top-N de PageRank.
+    # Texto ya renderizado, no una lista de Document: no debe competir por
+    # ctx_max_docs ni aparecer en "Fuentes" (ver nodes.py::_citations). "" si no
+    # aplica.
+    repomap_skeleton: str
     # Señales de análisis estático (ruff/radon) del repo objetivo.
     static_findings: dict
     # Salida del nodo revisor (markdown, compacto para el chat).

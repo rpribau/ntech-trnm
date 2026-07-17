@@ -45,7 +45,13 @@
       "Bash(curl -s -o /dev/null -w \"HTTP %{http_code} \\(%{time_total}s\\)\\\\n\" https://api.github.com/repos/NTech-TRNM/ws-arg)",
       "Bash(curl -s -o /tmp/resp1.json -w 'HTTP %{http_code} \\(%{time_total}s\\)\\\\n' -H 'Authorization: Bearer __TRACKED_VAR__' -H 'Accept: application/vnd.github+json' https://api.github.com/repos/NTech-TRNM/ws-arg)",
       "Bash(curl -s -H 'Authorization: Bearer __TRACKED_VAR__' -H 'Accept: application/vnd.github+json' https://api.github.com/rate_limit)",
-      "Bash(cd \"C:\\\\Users\\\\rprie\\\\OneDrive\\\\Documents\\\\Tesis\\\\ntech-trnm\" && rm -f .token_tmp /tmp/resp1.json && echo \"token temporal borrado\")"
+      "Bash(cd \"C:\\\\Users\\\\rprie\\\\OneDrive\\\\Documents\\\\Tesis\\\\ntech-trnm\" && rm -f .token_tmp /tmp/resp1.json && echo \"token temporal borrado\")",
+      "Bash(claude mcp *)",
+      "Bash(pacman -Q)",
+      "Bash(.venv/bin/pip list *)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(timeout 120 .venv/bin/python /tmp/claude-1000/-home-rpribau-Documents-Tesis-ntech-trnm/7a6dd899-23df-41f1-af92-1aa8b26db3cd/scratchpad/followup_test.py)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

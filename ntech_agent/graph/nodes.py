@@ -12,7 +12,9 @@ from ntech_agent.commits.query import org_insights
 from ntech_agent.graph.state import AgentState
 from ntech_agent.llm import extract_text, get_chat_model, log_llm_failure
 from ntech_agent.repomap.build import load_repo_map
+from ntech_agent.repomap.expansion import select_expansion_files
 from ntech_agent.repomap.graph import graph_from_edges, rank_files
+from ntech_agent.repomap.skeleton import render_repo_skeleton
 from ntech_agent.repomap.tags import is_notebook, notebook_code_to_text
 from ntech_agent.retrieval.hybrid import retrieve_guidelines, search
 
@@ -33,8 +35,19 @@ def load_skill(settings: Settings | None = None) -> str:
 
 
 def _format_context(docs: list[Document], settings: Settings) -> str:
+    # Los docs "repomap_file" (top-N por PageRank o expansión dirigida) son una
+    # decisión explícita del pipeline, no un candidato más de RAG — se incluyen
+    # SIEMPRE completos, y el resto del cupo ctx_max_docs se llena con chunks
+    # normales. Más robusto que depender del orden de inserción para que
+    # sobrevivan el corte (un simple prepend es frágil si algo más antepone otra
+    # cosa antes de llegar acá).
+    priority = [d for d in docs if d.metadata.get("source_type") == "repomap_file"]
+    rest = [d for d in docs if d.metadata.get("source_type") != "repomap_file"]
+    budget = max(settings.ctx_max_docs - len(priority), 0)
+    selected = priority + rest[:budget]
+
     out = []
-    for d in docs[: settings.ctx_max_docs]:
+    for d in selected:
         bc = d.metadata.get("breadcrumb", d.metadata.get("path", "?"))
         # Los documentos de archivo completo (repo map) usan un presupuesto más
         # grande que los chunks normales — truncarlos a ctx_chars (900) anularía
@@ -93,35 +106,17 @@ def _read_repo_file(path) -> str | None:
     return notebook_code_to_text(text) if is_notebook(path) else text
 
 
-def repomap_node(state: AgentState, config=None) -> dict:
-    """Si hay repo map disponible para el repo (route=review), reemplaza los
-    chunks de ``retrieved`` por archivos COMPLETOS (código o, para .ipynb, solo
-    las celdas de código), elegidos por PageRank sobre el grafo de dependencias
-    del repo con boost a lo que RAG ya trajo como semilla. Se autosaltea (deja
-    el ``retrieved`` chunk-based intacto) si la ruta no es review, el repo no
-    tiene suficientes archivos con símbolos (p. ej. un repo con puros formatos
-    sin soporte, como YAML o Markdown) o el feature está deshabilitado."""
-    settings = get_settings()
-    repo = state.get("repo")
-    if state.get("route") != "review" or not repo or not settings.repomap_enabled:
-        return {}
+_REPOMAP_ROUTES = {"review", "summary", "assist"}
 
-    data = load_repo_map(repo, settings)
-    if data is None or len(data.get("files", [])) < settings.repomap_min_files_for_rank:
-        return {}
 
-    seeds = {
-        d.metadata["path"]: settings.repomap_seed_boost
-        for d in state.get("retrieved", [])
-        if d.metadata.get("repo") == repo and d.metadata.get("path")
-    }
-    graph = graph_from_edges([f["path"] for f in data["files"]], data["edges"])
-    scores = rank_files(graph, seeds=seeds, alpha=settings.repomap_pagerank_alpha)
-    top_paths = sorted(scores, key=lambda p: -scores[p])[: settings.repomap_top_files]
-
+def _read_full_files(repo: str, paths: list[str], settings: Settings) -> list[Document]:
+    """Lee COMPLETOS los archivos en ``paths`` (código o, para ``.ipynb``, solo
+    las celdas de código) — mismo shape de Document/metadata sin importar si
+    ``paths`` vino del top-N por PageRank o de la expansión dirigida, así
+    ``_citations()``/``_used_repomap()`` no necesitan distinguir el origen."""
     repo_dir = settings.repos_dir / repo
     docs: list[Document] = []
-    for path in top_paths:
+    for path in paths:
         full_path = repo_dir / path
         text = _read_repo_file(full_path)
         if not text:
@@ -140,9 +135,82 @@ def repomap_node(state: AgentState, config=None) -> dict:
                 },
             )
         )
-    if not docs:
+    return docs
+
+
+def repomap_node(state: AgentState, config=None) -> dict:
+    """Repo map: en review/summary/assist arma un índice de solo firmas
+    (``repomap_skeleton``, ver ``repomap/skeleton.py``) con cobertura del 100%
+    de los archivos con símbolos del repo — no depende de ranking, así que NO
+    usa ``repomap_min_files_for_rank`` (ese umbral protege la calidad del
+    PageRank de abajo, no aplica a un índice que no rankea nada).
+
+    Solo en route=review, además reemplaza los chunks de ``retrieved`` por
+    archivos COMPLETOS elegidos por PageRank sobre el grafo de dependencias del
+    repo con boost a lo que RAG ya trajo como semilla (comportamiento sin
+    cambios, sigue exclusivo de review por costo).
+
+    En las tres rutas, si hay skeleton, se intenta una expansión dirigida (una
+    sola llamada LLM acotada, ``repomap/expansion.py``) que puede rescatar del
+    índice algún archivo que ni ganó el top-N ni fue traído por RAG — se
+    antepone a ``retrieved`` como archivo completo.
+
+    Se autosaltea (deja ``retrieved`` intacto) si la ruta no aplica, no hay
+    repo, o no hay repo map disponible/habilitado para el repo."""
+    settings = get_settings()
+    repo = state.get("repo")
+    route = state.get("route")
+    if not repo or not settings.repomap_enabled or route not in _REPOMAP_ROUTES:
         return {}
-    return {"retrieved": docs}
+
+    data = load_repo_map(repo, settings)
+    if data is None:
+        return {}
+
+    result: dict = {}
+
+    if settings.repomap_skeleton_enabled:
+        skeleton = render_repo_skeleton(data, settings)
+        if skeleton:
+            result["repomap_skeleton"] = skeleton
+
+    top_paths: list[str] = []
+    if route == "review" and len(data.get("files", [])) >= settings.repomap_min_files_for_rank:
+        seeds = {
+            d.metadata["path"]: settings.repomap_seed_boost
+            for d in state.get("retrieved", [])
+            if d.metadata.get("repo") == repo and d.metadata.get("path")
+        }
+        graph = graph_from_edges([f["path"] for f in data["files"]], data["edges"])
+        scores = rank_files(graph, seeds=seeds, alpha=settings.repomap_pagerank_alpha)
+        top_paths = sorted(scores, key=lambda p: -scores[p])[: settings.repomap_top_files]
+        full_docs = _read_full_files(repo, top_paths, settings)
+        if full_docs:
+            result["retrieved"] = full_docs
+
+    if settings.repomap_expansion_enabled and result.get("repomap_skeleton"):
+        base_retrieved = result.get("retrieved", state.get("retrieved", []))
+        if route == "review":
+            already_included = set(top_paths)
+        else:
+            already_included = {
+                d.metadata.get("path")
+                for d in base_retrieved
+                if d.metadata.get("repo") == repo and d.metadata.get("path")
+            }
+        chosen = select_expansion_files(
+            question=state.get("question", ""),
+            skeleton=result["repomap_skeleton"],
+            already_included=already_included,
+            valid_paths={f["path"] for f in data["files"]},
+            settings=settings,
+        )
+        if chosen:
+            expansion_docs = _read_full_files(repo, chosen, settings)
+            if expansion_docs:
+                result["retrieved"] = expansion_docs + base_retrieved
+
+    return result
 
 
 def static_node(state: AgentState, config=None) -> dict:
@@ -225,16 +293,26 @@ def reviewer_node(state: AgentState, config=None) -> dict:
     static_txt = format_for_prompt(state.get("static_findings", {}))
     code_ctx = _format_context(state.get("retrieved", []), settings)
     guide_ctx = _format_context(guidelines, settings)
+    skeleton = state.get("repomap_skeleton") or ""
+    skeleton_block = (
+        f"--- Índice del repo (firmas, sin cuerpo — referencia estructural) ---\n{skeleton}\n\n"
+        if skeleton
+        else ""
+    )
 
     prompt = (
         f"{load_skill(settings)}\n\n"
         "=== CONTEXTO PARA LA REVISIÓN ===\n"
         f"Repo objetivo: {repo}\n\n"
+        f"{skeleton_block}"
         f"--- Código recuperado ---\n{code_ctx}\n\n"
         f"--- Guidelines relevantes ---\n{guide_ctx}\n\n"
         f"--- Análisis estático (evidencia objetiva) ---\n{static_txt}\n\n"
         "Aplica la Skill y produce la revisión estructurada. Cita el código "
-        "(archivo:línea) y la guía en cada hallazgo. No inventes: usa solo el contexto."
+        "(archivo:línea) y la guía en cada hallazgo. El índice del repo es solo "
+        "referencia estructural (nombres/ubicación de símbolos, SIN cuerpo) — no "
+        "generes hallazgos ni afirmaciones de comportamiento basados solo en el "
+        "índice, para eso usá el código recuperado. No inventes: usa solo el contexto."
     )
 
     try:
@@ -517,6 +595,12 @@ def synthesize_node(state: AgentState, config=None) -> dict:
         return {"answer": answer, "messages": [AIMessage(content=answer)]}
 
     ctx = _format_context(docs, settings)
+    skeleton = state.get("repomap_skeleton") or ""
+    skeleton_block = (
+        f"--- Índice del repo (firmas, sin cuerpo — referencia estructural) ---\n{skeleton}\n\n"
+        if skeleton
+        else ""
+    )
     static_txt = format_for_prompt(state.get("static_findings", {})) if state.get(
         "static_findings"
     ) else ""
@@ -544,10 +628,13 @@ def synthesize_node(state: AgentState, config=None) -> dict:
     prompt = (
         f"Pregunta del usuario: {state.get('question')}\n\n"
         f"{instr}\n\n"
+        f"{skeleton_block}"
         f"--- Contexto recuperado ---\n{ctx}\n\n"
         + (f"--- Análisis estático ---\n{static_txt}\n\n" if static_txt else "")
         + "Responde en español, en markdown, sin inventar información fuera del contexto. "
-        "Sé breve y directo (máx. ~200-250 palabras), sin relleno ni repetición innecesaria."
+        "El índice del repo (si aparece) es solo referencia estructural, no lo cites "
+        "como evidencia de comportamiento. Sé breve y directo (máx. ~200-250 palabras), "
+        "sin relleno ni repetición innecesaria."
     )
 
     try:

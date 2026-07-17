@@ -10,6 +10,7 @@ from ntech_agent.graph.nodes import (
     _answer_review_question,
     _citations,
     _Finding,
+    _format_context,
     _render_review,
     _Review,
     _review_evidence,
@@ -61,6 +62,26 @@ def test_citations_caps_and_notes_remaining():
 
 def test_citations_empty_returns_placeholder():
     assert _citations([], _settings()) == "_(sin fuentes)_"
+
+
+def test_format_context_always_keeps_repomap_file_docs_even_when_over_max_docs():
+    chunks = [
+        Document(page_content=f"chunk {i}", metadata={"path": f"c{i}.py"}) for i in range(6)
+    ]
+    repomap_docs = [
+        Document(
+            page_content="archivo completo uno",
+            metadata={"path": "one.py", "source_type": "repomap_file"},
+        ),
+        Document(
+            page_content="archivo completo dos",
+            metadata={"path": "two.py", "source_type": "repomap_file"},
+        ),
+    ]
+    docs = chunks + repomap_docs  # los repomap_file quedan al final, después del corte naive
+    result = _format_context(docs, _settings(ctx_max_docs=3))
+    assert "archivo completo uno" in result
+    assert "archivo completo dos" in result
 
 
 def _finding(severidad: str, ubicacion: str = "a.py:1") -> _Finding:

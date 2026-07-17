@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     repomap_pagerank_alpha: float = 0.85
     repomap_min_files_for_rank: int = 2  # bajo este umbral, repomap_node se autosaltea
 
+    # ---- Repo map: skeleton (índice de firmas) + expansión dirigida ----
+    repomap_skeleton_enabled: bool = True
+    repomap_skeleton_max_files: int = 500  # si se supera, se trunca (no se omite el índice)
+    repomap_skeleton_max_symbols_per_file: int = 40  # evita que un archivo gigante domine el índice
+    repomap_skeleton_max_chars: int = 6000  # presupuesto total del bloque (ver repomap_file_chars)
+    repomap_expansion_enabled: bool = True
+    repomap_expansion_max_files: int = 2
+
     # ---- Prompts / generación (nodos del grafo) ----
     ctx_chars: int = 900  # truncado por doc al armar el contexto de un prompt
     ctx_max_docs: int = 8  # máx. docs recuperados incluidos en el contexto
