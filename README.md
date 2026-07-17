@@ -1,6 +1,6 @@
 # NTech Code Review Agent
 
-Hecho por @rpribau
+Hecho por [rpribau](https://github.com/rpribau)
 
 Agente que revisa los repositorios de la org de GitHub **NTech-TRNM**, aplica una
 **Skill de buenas prácticas de código** (design patterns, code smells) apoyada en
